@@ -1,0 +1,37 @@
+import { chromium } from 'playwright';
+import assert from 'node:assert/strict';
+import {mkdir} from 'node:fs/promises';
+import {koreaToday,addDays} from '../server/domain.js';
+const browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_PATH||'/usr/bin/chromium',args:['--no-sandbox','--disable-dev-shm-usage']});
+try{
+ const page=await browser.newPage({baseURL:'http://127.0.0.1:3000',viewport:{width:1440,height:1100}});const errors=[];
+ const connection={configured:true,authenticated:true,state:'membership_missing',membershipCount:0,roomSearchReady:false,message:'소노 로그인은 정상입니다. 이 계정의 예약용 회원권이 0개로 조회되어 회사 콘도 재고를 확인할 수 없습니다.',action:'소노 공식 사이트에서 회사 회원권을 확인해 주세요.'};
+ await page.route('**/api/connection/check',route=>route.fulfill({json:{connection}}));
+ await page.route('**/api/search',route=>{const body=route.request().postDataJSON();if(body.mode!=='live')return route.continue();if(body.criteria.bookingBasis!=='standard')return route.fulfill({status:409,json:{code:'SONO_MEMBERSHIP_MISSING',message:connection.message,connection}});return route.fulfill({json:{source:'sono',bookingBasis:'standard',scopeLabel:'D멤버스 일반 예약',checkedAt:new Date().toISOString(),criteria:body.criteria,warnings:['D멤버스 일반 예약 기준입니다. 회사 계약 재고·우대요금이 아닙니다.'],connection:{...connection,standardAvailable:true},rooms:[{id:'live-test-suite',resort:'쏠비치 양양 리조트',destination:'yangyang',region:'강원',type:'suite',title:'스위트(취사/오션뷰/침대)',size:28.7,sizeSqm:94.9,capacity:8,capacityBasis:'maximum',kitchen:true,price:200000,totalPrice:400000,rateSubtotal:420000,discountAmount:20000,discountLabel:'회원등급 할인',nightlyPrices:[{date:body.criteria.checkIn,price:200000},{date:addDays(body.criteria.checkIn,1),price:220000}],scene:'ocean',source:'sono'}]}});});
+ page.on('pageerror',e=>errors.push(e.message));
+ await page.goto('http://127.0.0.1:3000');await page.getByRole('heading',{name:'어디에서 쉬고 싶으신가요?'}).waitFor();
+ await page.getByRole('button',{name:'연결 확인',exact:true}).click();await page.getByText('소노 계정 로그인 확인 완료',{exact:true}).waitFor();assert.ok((await page.locator('.account-card').innerText()).includes('회원권이 0개'));
+ await mkdir('artifacts',{recursive:true});await page.screenshot({path:'artifacts/desktop.png',fullPage:true});
+ await page.getByRole('button',{name:'예약 가능한 객실 찾기'}).click();await page.getByText('예시 결과입니다.',{exact:false}).waitFor();
+ assert.equal(await page.locator('.room-card').count(),12);
+ await page.context().grantPermissions(['clipboard-read','clipboard-write']);await page.getByRole('button',{name:'결과 복사'}).click();assert.ok((await page.evaluate(()=>navigator.clipboard.readText())).startsWith('[예시 데이터'));
+ await page.locator('#adults').selectOption('12');await page.getByRole('button',{name:'예약 가능한 객실 찾기'}).click();await page.getByRole('heading',{name:'조건에 맞는 예시 객실이 없어요'}).waitFor();
+ await page.locator('#adults').selectOption('2');await page.getByRole('button',{name:'예약 가능한 객실 찾기'}).click();await page.locator('.room-card').first().waitFor();
+ await page.getByLabel('객실 정렬').selectOption('price');assert.ok((await page.locator('.room-card').first().innerText()).includes('소노벨 단양'));
+ await page.getByRole('button',{name:'소노벨 단양 객실 상세 보기'}).click();await page.getByRole('dialog').waitFor();await page.keyboard.press('Escape');assert.equal(await page.getByRole('dialog').count(),0);
+ await page.getByRole('tab',{name:'자연어로 찾기'}).click();const date=addDays(koreaToday(),14);await page.locator('#natural-query').fill(`${date}부터 2박 양양 성인 2명 아이 2명 30평 이상 스위트`);
+ await page.getByRole('button',{name:'조건 적용하기'}).click();await page.locator('#destination').waitFor();assert.equal(await page.locator('#destination').inputValue(),'yangyang');assert.equal(await page.locator('#checkIn').inputValue(),date);assert.equal(await page.locator('#checkOut').inputValue(),addDays(date,2));assert.equal(await page.locator('#roomType').inputValue(),'suite');
+ await page.getByRole('button',{name:'예약 가능한 객실 찾기'}).click();await page.getByText('예시 결과입니다.',{exact:false}).waitFor();assert.equal(await page.locator('.room-card').count(),1);
+ await page.screenshot({path:'artifacts/results.png',fullPage:true});
+ await page.getByRole('button',{name:'실시간 조회',exact:true}).click();await page.getByRole('button',{name:'예약 가능한 객실 찾기'}).click();await page.getByRole('alert').waitFor();assert.equal(await page.locator('.room-card').count(),0);assert.ok((await page.getByRole('alert').innerText()).includes('회원권이 0개'));
+ await page.getByRole('radio',{name:'D멤버스 일반 조회',exact:true}).check();await page.locator('#minSize').selectOption('0');await page.getByRole('button',{name:'예약 가능한 객실 찾기'}).click();await page.locator('.room-card').first().waitFor();
+ assert.ok((await page.locator('.live-warnings').innerText()).includes('회사 계약 재고·우대요금이 아닙니다'));assert.ok((await page.locator('.room-card').innerText()).includes('숙박 합계 400,000원'));
+ await page.getByRole('button',{name:'쏠비치 양양 리조트 객실 상세 보기'}).click();await page.getByRole('dialog').waitFor();assert.ok((await page.locator('.nightly-prices').innerText()).includes('200,000원'));assert.ok((await page.getByRole('dialog').innerText()).includes('94.9㎡'));assert.ok((await page.locator('.grade-discount').innerText()).includes('20,000원'));await page.keyboard.press('Escape');
+ await page.getByRole('button',{name:'결과 복사'}).click();assert.ok((await page.evaluate(()=>navigator.clipboard.readText())).startsWith('[D멤버스 일반 예약 조회 · 회사 우대요금 아님]'));
+ await page.getByRole('radio',{name:'회사 회원권',exact:true}).check();await page.locator('#minSize').selectOption('30');
+ const invalid=await page.request.post('/api/search',{data:{mode:'demo',criteria:{region:'전체 지역',destination:'all',checkIn:date,checkOut:date,adults:2,children:0,roomType:'all',minSize:0}}});assert.equal(invalid.status(),400);
+ await page.setViewportSize({width:390,height:844});await page.getByRole('button',{name:'예시 데이터',exact:true}).click();await page.screenshot({path:'artifacts/mobile.png',fullPage:true});
+ assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),'mobile must not overflow');
+ await page.getByRole('button',{name:'예약 가능한 객실 찾기'}).click();await page.getByText('예시 결과입니다.',{exact:false}).waitFor();await page.getByRole('button',{name:'쏠비치 양양 객실 상세 보기'}).click();await page.getByRole('dialog').waitFor();await page.getByRole('button',{name:'닫기',exact:true}).click();
+ assert.deepEqual(errors,[]);console.log('Browser checks passed: search, sorting, room details, natural input, live failure, validation, responsive layout; no page errors.');
+}finally{await browser.close();}
